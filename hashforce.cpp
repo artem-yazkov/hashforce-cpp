@@ -2,8 +2,10 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <condition_variable>
 #include <iostream>
 #include <sstream>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -31,7 +33,8 @@ public:
 private:
     bool            isValid = true;
 
-    int parseRange(string range) {
+    int
+    parseRange(string range) {
         istringstream iss(range);
         uint16_t      from, to;
 
@@ -61,7 +64,7 @@ private:
                 cerr << "   characters range must be in [0, 128]" << endl;
                 return -1;
             }
-            chRanges.push_back(cr);
+            chRanges.push_back(move(cr));
         }
 
         /*  sort & merge for character ranges */
@@ -111,7 +114,7 @@ private:
 public:
     ArgOptions(int argc, char *argv[]) {
         if (argc <= 2) {
-            showHelp();
+            isValid = false;
             return;
         }
 
@@ -129,25 +132,26 @@ public:
                 hash = argv[i+1];
                 i++;
             } else {
-                showHelp();
+                isValid = false;
                 return;
             }
         }
     }
 
-    void showHelp() {
+    void
+    showHelp() {
         cout << "help message" << endl;
     }
 
-    bool valid() {
-        if (!isValid) {
-            /* Already reported about the error */
-            return false;
-        } else  if (hash.empty()) {
-            cerr << "'--hash' parameter is mandatory";
+    bool
+    valid() {
+        if (hash.empty()) {
+            cerr << "'--hash' parameter is mandatory" << endl;
             return false;
         } else if (!chRanges.size()) {
-            cerr << "'--range' parametr is mandatory";
+            cerr << "'--range' parametr is mandatory" << endl;
+            return false;
+        } else if (!isValid) {
             return false;
         }
 
@@ -155,6 +159,186 @@ public:
     }
 };
 
+class Word {
+private:
+    ArgOptions      *options;
+    uint16_t         size;
+    uint16_t         len;
+    vector<uint8_t>  data;
+    vector<uint8_t>  iranges;
+    vector<uint8_t>  ioffsets;
+
+public:
+    Word(ArgOptions *argOptions):
+        options(argOptions),
+        size(argOptions->rangeTo),
+        len(argOptions->rangeFrom) {
+
+        data.resize(size, options->chRanges[0].from);
+        iranges.resize(size, 0);
+        ioffsets.resize(size, 0);
+    }
+
+    bool
+    Increment(int rankIdx = 0) {
+        int rank = size - 1 -  rankIdx;
+
+        if ((rank > size - 1) || (rank < 0)) {
+            return false;
+        }
+        if (rank < size - len) {
+            len++;
+        }
+
+        int rcode;
+        if (ioffsets[rank] < (options->chRanges[iranges[rank]].count - 1)) {
+            ioffsets[rank]++;
+            rcode = true;
+        } else if (iranges[rank] < (options->chRanges.size() - 1)) {
+            iranges[rank]++;
+            ioffsets[rank] = 0;
+            rcode = true;
+        } else {
+            iranges[rank] = 0;
+            ioffsets[rank] = 0;
+            rcode = Increment(rankIdx + 1);
+        }
+        data[rank] = options->chRanges[iranges[rank]].from + ioffsets[rank];
+        return rcode;
+    }
+
+    bool
+    Set(uint64_t offset) {
+        for (int widx = size - 1; offset > 0; widx--) {
+            if (widx < 0) {
+                return false;
+            }
+            if (widx < size - len) {
+                len++;
+            }
+
+            uint16_t choff = offset % options->chRangesSum;  /* char value offset */
+            int      chidx = 0;                              /* char range index  */
+            while ((chidx < options->chRanges.size()) &&
+                   (choff >= options->chRanges[chidx].count)) {
+                choff -= options->chRanges[chidx].count;
+                chidx++;
+            }
+            if (chidx == options->chRanges.size()) {
+                return false;
+            }
+            data[widx]     = options->chRanges[chidx].from + choff;
+            iranges[widx]  = chidx;
+            ioffsets[widx] = choff;
+            offset /= options->chRangesSum;
+        }
+        return true;
+    }
+
+    void
+    Print(void) {
+
+    }
+};
+
+class HashForce {
+private:
+    mutex              mtx;
+    condition_variable condBegin;
+    condition_variable condEnd;
+
+    vector<thread *>   threads;
+    vector<Word>       words;
+    vector<uint64_t>   cycles;
+
+    ArgOptions        *options;
+    uint64_t           blockNum      = 0;
+    uint64_t           offset        = 0;
+    uint32_t           workersWait   = 0;
+    bool               answerIsFound = false;
+
+    void
+    workerThread(int nworker) {
+        while (1) {
+            uint64_t cyclesCount = cycles[nworker];
+            for (int i = 0; i < cyclesCount; i++) {
+                words[nworker].Increment();
+                if (0) {
+                    /* catched !! */
+                    answerIsFound = true;
+                    break;
+                }
+            }
+            unique_lock<mutex> lock(mtx);
+            workersWait++;
+            condEnd.notify_one();
+            condBegin.wait(lock);
+        }
+    }
+
+    bool
+    prepareBlock(void) {
+        uint64_t length = options->blockLength;
+        uint32_t remain = 0;
+
+        if ((options->rangeCapacity - offset) < (options->cores * options->blockLength)) {
+            length = (options->rangeCapacity - offset) / options->cores;
+            remain = (options->rangeCapacity - offset) % options->cores;
+        } else {
+            return false;
+        }
+        for (Word &word: words) {
+            word.Set(offset);
+        }
+        for (int iworker = 0; iworker < options->cores; iworker++) {
+            words[iworker].Set(offset);
+            cycles[iworker] = length + ((iworker < remain) ? 1 : 0);
+            offset += cycles[iworker];
+        }
+        return true;
+    }
+
+public:
+    HashForce(ArgOptions *argOptions):
+        options(argOptions) {
+
+        cycles.resize(options->cores, 0);
+        for (int iworker = 0; iworker < options->cores; iworker++) {
+            words.emplace_back(options);
+        }
+    }
+
+    int
+    Manage(void) {
+        prepareBlock();
+        for (int iworker = 0; iworker < options->cores; iworker++) {
+            threads.push_back(new thread(&HashForce::workerThread, this, iworker));
+        }
+        while (1) {
+            unique_lock<mutex> lock(mtx);
+            while ((workersWait < options->cores) && !answerIsFound) {
+                condEnd.wait(lock);
+            }
+            if (answerIsFound || (offset == options->rangeCapacity)) {
+                if (answerIsFound) {
+                    /* catched! */
+                } else {
+                    /* checkout all range - no luck :( */
+                }
+                /* stop all threads & break */
+                for (thread *thr: threads) {
+                    delete thr;
+                }
+                break;
+            }
+            workersWait = 0;
+            blockNum++;
+            prepareBlock();
+            condBegin.notify_all();
+        }
+        return 0;
+    }
+};
 
 int main(int argc, char *argv[])
 {
