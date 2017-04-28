@@ -74,8 +74,8 @@ private:
         sort(chRanges.begin(), chRanges.end(),
              []( const chRange &a, const chRange &b) -> bool {return a.from < b.from;});
 
-        int mrange = 0;
-        for (int irange = 1;
+        uint mrange = 0;
+        for (uint irange = 1;
                  irange < chRanges.size(); irange++) {
             if (chRanges[mrange].to >= chRanges[irange].from) {
                 if (chRanges[mrange].to < chRanges[irange].to) {
@@ -120,7 +120,7 @@ private:
             cerr << "incorrect hash length" << endl;
             return -1;
         }
-        for (int i = 0; i < hash.size(); i++) {
+        for (uint i = 0; i < hash.size(); i++) {
             sscanf(&shash[i << 1], "%02hhx", &hash[i]);
         }
         return 0;
@@ -187,9 +187,9 @@ private:
 public:
     Word(ArgOptions *argOptions):
         options(argOptions),
-        size(argOptions->rangeTo),
-        len(argOptions->rangeFrom) {
-
+        len(argOptions->rangeFrom),
+        size(argOptions->rangeTo)
+    {
         data.resize(size, options->chRanges[0].from);
         iranges.resize(size, 0);
         ioffsets.resize(size, 0);
@@ -235,7 +235,7 @@ public:
             }
 
             uint16_t choff = offset % options->chRangesSum;  /* char value offset */
-            int      chidx = 0;                              /* char range index  */
+            uint     chidx = 0;                              /* char range index  */
             while ((chidx < options->chRanges.size()) &&
                    (choff >= options->chRanges[chidx].count)) {
                 choff -= options->chRanges[chidx].count;
@@ -298,7 +298,7 @@ private:
     workerThread(int nworker) {
 
         while (1) {
-            for (int i = 0; (i < cycles[nworker]) && (answerWorkIdx < 0); i++) {
+            for (uint i = 0; (i < cycles[nworker]) && (answerWorkIdx < 0); i++) {
                 MD5 md5;
                 md5.update(words[nworker].getData(), words[nworker].getLen());
                 md5.finalize();
@@ -337,7 +337,7 @@ private:
         for (Word &word: words) {
             word.Set(offset);
         }
-        for (int iworker = 0; iworker < options->cores; iworker++) {
+        for (uint iworker = 0; iworker < options->cores; iworker++) {
             words[iworker].Set(offset);
             cycles[iworker] = length + ((iworker < remain) ? 1 : 0);
             offset += cycles[iworker];
@@ -350,7 +350,7 @@ public:
         options(argOptions), answerWorkIdx(-1) {
 
         cycles.resize(options->cores, 0);
-        for (int iworker = 0; iworker < options->cores; iworker++) {
+        for (uint iworker = 0; iworker < options->cores; iworker++) {
             words.emplace_back(options);
         }
     }
@@ -359,7 +359,7 @@ public:
     Manage(void) {
         blockNum = 1;
         prepareBlock();
-        for (int iworker = 0; iworker < options->cores; iworker++) {
+        for (uint iworker = 0; iworker < options->cores; iworker++) {
             threads.emplace_back(&HashForce::workerThread, this, iworker);
         }
         while (1) {
