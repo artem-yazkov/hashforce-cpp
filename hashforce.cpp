@@ -17,6 +17,7 @@ using namespace std;
 
 class ArgOptions {
 public:
+    uint32_t blockOffset = 0;
     uint32_t blockLength = 1000000;
     uint32_t cores       = thread::hardware_concurrency();
 
@@ -133,7 +134,10 @@ public:
             return;
         }
         for (int i = 1 ; i < argc - 1; i++) {
-            if (string(argv[i]) == "--block-length") {
+            if (string(argv[i]) == "--block-offset") {
+                blockOffset = stoi(argv[i+1]);
+                i++;
+            } else if (string(argv[i]) == "--block-length") {
                 blockLength = stoi(argv[i+1]);
                 i++;
             } else if (string(argv[i]) == "--cores") {
@@ -204,6 +208,7 @@ public:
         }
         if (rank < size - len) {
             len++;
+            return true;
         }
 
         int rcode;
@@ -226,14 +231,23 @@ public:
     bool
     Set(uint64_t offset) {
         len = options->rangeFrom;
-        for (int widx = size - 1; offset > 0; widx--) {
-            if (widx < 0) {
-                return false;
-            }
-            if (widx < size - len) {
+        fill(data.begin(), data.end(), options->chRanges[0].from);
+        fill(iranges.begin(), iranges.end(), 0);
+        fill(ioffsets.begin(), ioffsets.end(), 0);
+
+        uint64_t rank = 1, irank = 0;
+        while (offset >= (rank * options->chRangesSum)) {
+            rank *= options->chRangesSum;
+            irank++;
+            if (irank >= options->rangeFrom) {
+                offset -= rank;
                 len++;
             }
-
+        }
+        for (int widx = size - 1; offset > 0; widx--) {
+            if ((len > size) || (widx < size - len)) {
+                return false;
+            }
             uint16_t choff = offset % options->chRangesSum;  /* char value offset */
             uint     chidx = 0;                              /* char range index  */
             while ((chidx < options->chRanges.size()) &&
@@ -296,7 +310,6 @@ private:
 
     void
     workerThread(int nworker) {
-
         while (1) {
             for (uint i = 0; (i < cycles[nworker]) && (answerWorkIdx < 0); i++) {
                 MD5 md5;
@@ -326,16 +339,12 @@ private:
     bool
     prepareBlock(void) {
         cout <<  "block № " << blockNum << ": start from " << offset << " ... ";
-
         uint64_t length = options->blockLength;
         uint32_t remain = 0;
 
         if ((options->rangeCapacity - offset) < (options->cores * options->blockLength)) {
             length = (options->rangeCapacity - offset) / options->cores;
             remain = (options->rangeCapacity - offset) % options->cores;
-        }
-        for (Word &word: words) {
-            word.Set(offset);
         }
         for (uint iworker = 0; iworker < options->cores; iworker++) {
             words[iworker].Set(offset);
@@ -347,8 +356,8 @@ private:
 
 public:
     HashForce(ArgOptions *argOptions):
-        options(argOptions), answerWorkIdx(-1) {
-
+        options(argOptions), answerWorkIdx(-1)
+    {
         cycles.resize(options->cores, 0);
         for (uint iworker = 0; iworker < options->cores; iworker++) {
             words.emplace_back(options);
@@ -357,8 +366,11 @@ public:
 
     int
     Manage(void) {
-        blockNum = 1;
+        offset = static_cast<uint64_t>(options->blockOffset) * options->blockLength * options->cores;
+        offset = (offset > options->rangeCapacity) ? options->rangeCapacity : offset;
+        blockNum = options->blockOffset;
         prepareBlock();
+
         for (uint iworker = 0; iworker < options->cores; iworker++) {
             threads.emplace_back(&HashForce::workerThread, this, iworker);
         }
@@ -402,19 +414,27 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    HashForce hashForce(&args);
-    hashForce.Manage();
-
-#if 0
     printf("blockLength     : %u\n", args.blockLength);
     printf("cores           : %u\n", args.cores);
     printf("rangeFrom       : %u\n", args.rangeFrom);
     printf("rangeTo         : %u\n", args.rangeTo);
-    printf("rangeCapacity   : %llu\n", args.rangeCapacity);
+    printf("rangeCapacity   : %lu\n",args.rangeCapacity);
+/*
     for (ArgOptions::chRange &ch: args.chRanges) {
         printf("from: %u, to: %u, count: %u\n", ch.from, ch.to, ch.count);
     }
-#endif
+
+    Word word(&args);
+    word.Print();
+    for (int i = 0; i < 64; i++) {
+        word.Set(i);
+        printf("word.Set(%d): ", i);
+        word.Print();
+    }
+*/
+
+    HashForce hashForce(&args);
+    hashForce.Manage();
 
     return 0;
 }
