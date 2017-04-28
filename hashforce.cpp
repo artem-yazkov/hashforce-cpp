@@ -2,12 +2,16 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#include "md5.h"
 
 using namespace std;
 
@@ -21,17 +25,16 @@ public:
         uint8_t to;
         uint8_t count;
     } chRange;
-    vector<chRange> chRanges;
-    uint16_t        chRangesSum;
+    vector<chRange>     chRanges;
+    uint16_t            chRangesSum   = 0;
 
-    uint16_t        rangeFrom;
-    uint16_t        rangeTo;
-    uint64_t        rangeCapacity;
-
-    string          hash;
+    uint16_t            rangeFrom     = 0;
+    uint16_t            rangeTo       = 0;
+    uint64_t            rangeCapacity = 0;
+    array<uint8_t,16>   hash;
 
 private:
-    bool            isValid = true;
+    bool                isValid = true;
 
     int
     parseRange(string range) {
@@ -111,13 +114,24 @@ private:
         return 0;
     }
 
+    int
+    parseHash(string shash) {
+        if (shash.length() != (hash.size() << 1)) {
+            cerr << "incorrect hash length" << endl;
+            return -1;
+        }
+        for (int i = 0; i < hash.size(); i++) {
+            sscanf(&shash[i << 1], "%02hhx", &hash[i]);
+        }
+        return 0;
+    }
+
 public:
     ArgOptions(int argc, char *argv[]) {
         if (argc <= 2) {
             isValid = false;
             return;
         }
-
         for (int i = 1 ; i < argc - 1; i++) {
             if (string(argv[i]) == "--block-length") {
                 blockLength = stoi(argv[i+1]);
@@ -126,16 +140,18 @@ public:
                 cores = stoi(argv[i+1]);
                 i++;
             } else if (string(argv[i]) == "--range") {
-                isValid = (parseRange(argv[i+1]) == 0);
+                isValid &= (parseRange(argv[i+1]) == 0);
                 i++;
             } else if (string(argv[i]) == "--hash") {
-                hash = argv[i+1];
+                isValid &= (parseHash(argv[i+1]) == 0);
                 i++;
             } else {
+                cerr << "unexpected option: " << argv[i] << endl;
                 isValid = false;
                 return;
             }
         }
+
     }
 
     void
@@ -162,8 +178,8 @@ public:
 class Word {
 private:
     ArgOptions      *options;
-    uint16_t         size;
     uint16_t         len;
+    uint16_t         size;
     vector<uint8_t>  data;
     vector<uint8_t>  iranges;
     vector<uint8_t>  ioffsets;
@@ -209,6 +225,7 @@ public:
 
     bool
     Set(uint64_t offset) {
+        len = options->rangeFrom;
         for (int widx = size - 1; offset > 0; widx--) {
             if (widx < 0) {
                 return false;
@@ -235,19 +252,35 @@ public:
         return true;
     }
 
+    uint8_t *
+    getData(void) {
+        return &data[size - len];
+    }
+
+    uint16_t
+    getLen(void) {
+        return len;
+    }
+
     void
     Print(void) {
-
+        for (int i = 0; i < size; i++) {
+            if (i < size - len)
+                printf(" ");
+            else
+                printf("%c", data[i]);
+        }
+        printf("\n");
     }
 };
 
 class HashForce {
 private:
-    mutex              mtx;
+    mutex              mut;
     condition_variable condBegin;
     condition_variable condEnd;
 
-    vector<thread *>   threads;
+    vector<thread>     threads;
     vector<Word>       words;
     vector<uint64_t>   cycles;
 
@@ -255,37 +288,51 @@ private:
     uint64_t           blockNum      = 0;
     uint64_t           offset        = 0;
     uint32_t           workersWait   = 0;
-    bool               answerIsFound = false;
+
+    atomic<int>        answerWorkIdx;
+    enum eStatus {
+        stSearch, stFound, stNotFound
+    } status = stSearch;
 
     void
     workerThread(int nworker) {
+
         while (1) {
-            uint64_t cyclesCount = cycles[nworker];
-            for (int i = 0; i < cyclesCount; i++) {
-                words[nworker].Increment();
-                if (0) {
+            for (int i = 0; (i < cycles[nworker]) && (answerWorkIdx < 0); i++) {
+                MD5 md5;
+                md5.update(words[nworker].getData(), words[nworker].getLen());
+                md5.finalize();
+                int dc = 0;
+                for (; dc < 16; dc++) { if (md5.digest[dc] != options->hash[dc]) break; }
+                if (dc == 16) {
                     /* catched !! */
-                    answerIsFound = true;
+                    unique_lock<mutex> lock(mut);
+                    status = stFound;
+                    answerWorkIdx = nworker;
                     break;
                 }
+                words[nworker].Increment();
             }
-            unique_lock<mutex> lock(mtx);
+            unique_lock<mutex> lock(mut);
             workersWait++;
             condEnd.notify_one();
             condBegin.wait(lock);
+            if (status != stSearch) {
+                return;
+            }
         }
     }
 
     bool
     prepareBlock(void) {
+        cout <<  "block № " << blockNum << ": start from " << offset << " ... ";
+
         uint64_t length = options->blockLength;
         uint32_t remain = 0;
 
         if ((options->rangeCapacity - offset) < (options->cores * options->blockLength)) {
             length = (options->rangeCapacity - offset) / options->cores;
             remain = (options->rangeCapacity - offset) % options->cores;
-        } else {
-            return false;
         }
         for (Word &word: words) {
             word.Set(offset);
@@ -300,7 +347,7 @@ private:
 
 public:
     HashForce(ArgOptions *argOptions):
-        options(argOptions) {
+        options(argOptions), answerWorkIdx(-1) {
 
         cycles.resize(options->cores, 0);
         for (int iworker = 0; iworker < options->cores; iworker++) {
@@ -310,27 +357,34 @@ public:
 
     int
     Manage(void) {
+        blockNum = 1;
         prepareBlock();
         for (int iworker = 0; iworker < options->cores; iworker++) {
-            threads.push_back(new thread(&HashForce::workerThread, this, iworker));
+            threads.emplace_back(&HashForce::workerThread, this, iworker);
         }
         while (1) {
-            unique_lock<mutex> lock(mtx);
-            while ((workersWait < options->cores) && !answerIsFound) {
-                condEnd.wait(lock);
+            {
+                unique_lock<mutex> lock(mut);
+                while (workersWait < options->cores) {
+                    condEnd.wait(lock);
+                }
             }
-            if (answerIsFound || (offset == options->rangeCapacity)) {
-                if (answerIsFound) {
-                    /* catched! */
+            if ((status != stSearch) || (offset == options->rangeCapacity)) {
+                if (status == stFound) {
+                    cout << endl << "catched!" << endl;
+                    words[answerWorkIdx].Print();
                 } else {
-                    /* checkout all range - no luck :( */
+                    cout << endl << "checkout all range - no luck :(" << endl;
+                    status = stNotFound;
                 }
-                /* stop all threads & break */
-                for (thread *thr: threads) {
-                    delete thr;
+                condBegin.notify_all();
+                for (thread &thr: threads) {
+                    thr.join();
                 }
-                break;
+                return 0;
             }
+            cout << "+ " << options->cores << " * " << options->blockLength <<
+                    " hashes was checked" << endl;
             workersWait = 0;
             blockNum++;
             prepareBlock();
@@ -343,11 +397,24 @@ public:
 int main(int argc, char *argv[])
 {
     ArgOptions args(argc, argv);
-
     if (!args.valid()) {
         args.showHelp();
         return -1;
     }
+
+    HashForce hashForce(&args);
+    hashForce.Manage();
+
+#if 0
+    printf("blockLength     : %u\n", args.blockLength);
+    printf("cores           : %u\n", args.cores);
+    printf("rangeFrom       : %u\n", args.rangeFrom);
+    printf("rangeTo         : %u\n", args.rangeTo);
+    printf("rangeCapacity   : %llu\n", args.rangeCapacity);
+    for (ArgOptions::chRange &ch: args.chRanges) {
+        printf("from: %u, to: %u, count: %u\n", ch.from, ch.to, ch.count);
+    }
+#endif
 
     return 0;
 }
