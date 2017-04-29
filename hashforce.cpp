@@ -80,8 +80,8 @@ private:
         sort(chRanges.begin(), chRanges.end(),
              []( const chRange &a, const chRange &b) -> bool {return a.from < b.from;});
 
-        uint mrange = 0;
-        for (uint irange = 1;
+        uint32_t mrange = 0;
+        for (uint32_t irange = 1;
                  irange < chRanges.size(); irange++) {
             if (chRanges[mrange].to >= chRanges[irange].from) {
                 if (chRanges[mrange].to < chRanges[irange].to) {
@@ -125,7 +125,7 @@ private:
             Error("incorrect hash length");
             return -1;
         }
-        for (uint i = 0; i < hash.size(); i++) {
+        for (uint32_t i = 0; i < hash.size(); i++) {
             sscanf(&shash[i << 1], "%02hhx", &hash[i]);
         }
         hashFilled = true;
@@ -268,7 +268,7 @@ public:
                 return false;
             }
             uint16_t choff = offset % options->chRangesSum;  /* char value offset */
-            uint     chidx = 0;                              /* char range index  */
+            uint32_t chidx = 0;                              /* char range index  */
             while ((chidx < options->chRanges.size()) &&
                    (choff >= options->chRanges[chidx].count)) {
                 choff -= options->chRanges[chidx].count;
@@ -332,7 +332,7 @@ private:
     void
     workerThread(int nworker) {
         while (1) {
-            for (uint i = 0; (i < cycles[nworker]) && (answerWorkIdx < 0); i++) {
+            for (uint32_t i = 0; (i < cycles[nworker]) && (answerWorkIdx < 0); i++) {
                 MD5 md5;
                 md5.update(words[nworker].getData(), words[nworker].getLen());
                 md5.finalize();
@@ -367,7 +367,7 @@ private:
             length = (options->rangeCapacity - offset) / options->cores;
             remain = (options->rangeCapacity - offset) % options->cores;
         }
-        for (uint iworker = 0; iworker < options->cores; iworker++) {
+        for (uint32_t iworker = 0; iworker < options->cores; iworker++) {
             words[iworker].Set(offset);
             cycles[iworker] = length + ((iworker < remain) ? 1 : 0);
             offset += cycles[iworker];
@@ -380,7 +380,7 @@ public:
         options(argOptions), answerWorkIdx(-1)
     {
         cycles.resize(options->cores, 0);
-        for (uint iworker = 0; iworker < options->cores; iworker++) {
+        for (uint32_t iworker = 0; iworker < options->cores; iworker++) {
             words.emplace_back(options);
         }
     }
@@ -392,7 +392,7 @@ public:
         blockNum = options->blockOffset;
         prepareBlock();
 
-        for (uint iworker = 0; iworker < options->cores; iworker++) {
+        for (uint32_t iworker = 0; iworker < options->cores; iworker++) {
             threads.emplace_back(&HashForce::workerThread, this, iworker);
         }
         while (1) {
@@ -417,7 +417,9 @@ public:
                 return 0;
             }
             cout << "+ " << options->cores << " * " << options->blockLength <<
-                    " hashes was checked" << endl;
+                    " hashes was checked"
+                 << " (" << (static_cast<double>(offset) / options->rangeCapacity) * 100  << " % of total)"
+                 << endl;
             workersWait = 0;
             blockNum++;
             prepareBlock();
