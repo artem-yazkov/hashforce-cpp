@@ -359,7 +359,7 @@ private:
 
     bool
     prepareBlock(void) {
-        cout <<  "block № " << blockNum << ": start from " << offset << " ... " << flush;
+        cout <<  "block # " << blockNum << ": start from " << offset << " ... " << flush;
         uint64_t length = options->blockLength;
         uint32_t remain = 0;
 
