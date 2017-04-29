@@ -33,9 +33,15 @@ public:
     uint16_t            rangeTo       = 0;
     uint64_t            rangeCapacity = 0;
     array<uint8_t,16>   hash;
+    bool                hashFilled    = false;
 
 private:
-    bool                isValid = true;
+    bool                isValid       = true;
+
+    void
+    Error(string error) {
+        cout << "Error: " << endl << "      " << error << endl;
+    }
 
     int
     parseRange(string range) {
@@ -44,7 +50,7 @@ private:
 
         /* parse word range */
         if (!(iss >> from >> to)) {
-            cerr << "Unsupported format for '--range' option" << endl;
+            Error("Unsupported format for '--range' option");
             return -1;
         }
         rangeFrom = (from < to) ? from : to;
@@ -56,7 +62,7 @@ private:
             replace(token.begin(), token.end(), '-', ' ');
             istringstream tss(token);
             if (!(tss >> from >> to)) {
-                cerr << "Unsupported format for '--range' option" << endl;
+                Error("Unsupported format for '--range' option");
                 return -1;
             }
 
@@ -64,8 +70,7 @@ private:
             cr.from = (from < to) ? from : to;
             cr.to   = (from < to) ? to : from;
             if (cr.to > 128) {
-                cerr << "Unsupported format for '--range' option" << endl;
-                cerr << "   characters range must be in [0, 128]" << endl;
+                Error("characters range must be in [0, 128]");
                 return -1;
             }
             chRanges.push_back(move(cr));
@@ -98,7 +103,7 @@ private:
         uint64_t rank = 1;
         for (int i = 1; i <= rangeTo; i++) {
             if ((rank * chRangesSum) < rank) {
-                cerr << "range capacity overflow (> UINT64_MAX)" << endl;
+                Error("range capacity overflow (> UINT64_MAX)");
                 return -1;
             }
             rank *= chRangesSum;
@@ -106,24 +111,24 @@ private:
                  continue;
             }
             if ((rangeCapacity + rank) < rangeCapacity) {
-                cerr << "range capacity overflow (> UINT64_MAX)" << endl;
+                Error("range capacity overflow (> UINT64_MAX)");
                 return -1;
             }
             rangeCapacity += rank;
         }
-
         return 0;
     }
 
     int
     parseHash(string shash) {
         if (shash.length() != (hash.size() << 1)) {
-            cerr << "incorrect hash length" << endl;
+            Error("incorrect hash length");
             return -1;
         }
         for (uint i = 0; i < hash.size(); i++) {
             sscanf(&shash[i << 1], "%02hhx", &hash[i]);
         }
+        hashFilled = true;
         return 0;
     }
 
@@ -150,31 +155,45 @@ public:
                 isValid &= (parseHash(argv[i+1]) == 0);
                 i++;
             } else {
-                cerr << "unexpected option: " << argv[i] << endl;
+                Error(string("unexpected option: ") + argv[i]);
                 isValid = false;
                 return;
             }
         }
-
     }
 
     void
     showHelp() {
-        cout << "help message" << endl;
+        cout <<  "HashForce args: "
+             << endl << "   --block-offset   Skip first N blocks; default value: " << blockOffset
+             << endl << "   --block-length   Block length (hashes per core); default value: " << blockLength
+             << endl << "   --cores          Involved cores; default value: " << cores
+             << endl << "   --range          Input words range in strictly specific form (see below) "
+             << endl << "                    Mandatory argument"
+             << endl << "   --hash           MD5 hash to attack; encoded in hex (lowercase) "
+             << endl << "                    Mandatory argument"
+             << endl << "Words range format:"
+             << endl << "  from to chrange0[:chrange1:....:chrangeN]"
+             << endl << "where:"
+             << endl << "     from           Minimum characters in word"
+             << endl << "     to             Maximum characters in word"
+             << endl << "     chrangeX       Continuous range of character codes in form: from-to"
+             << endl << "Complete example:"
+             << endl << "     hashforce --range \"1 5 65-90:97-122\" --hash 92b09c7c48c520c3c55e497875da437c"
+             << endl;
     }
 
     bool
     valid() {
-        if (hash.empty()) {
-            cerr << "'--hash' parameter is mandatory" << endl;
+        if (!hashFilled) {
+            Error("'--hash' parameter is mandatory");
             return false;
         } else if (!chRanges.size()) {
-            cerr << "'--range' parametr is mandatory" << endl;
+            Error("'--range' parameter is mandatory");
             return false;
         } else if (!isValid) {
             return false;
         }
-
         return true;
     }
 };
@@ -278,14 +297,16 @@ public:
 
     void
     Print(void) {
-        for (int i = 0; i < size; i++) {
-            if (i < size - len)
-                printf(" ");
-            else
-                printf("%c", data[i]);
+        vector<char> raw(len + 1, 0);
+        vector<char> hex(len*2 + 1, 0);
+        for (int ifrom = size - len, ito = 0; ifrom < size; ifrom++, ito++) {
+            snprintf(&(raw[ito]), raw.size() - ito, "%c", data[ifrom]);
+            snprintf(&(hex[ito << 1]), hex.size() - (ito << 1), "%02hhx", data[ifrom]);
         }
-        printf("\n");
+        cout << "   raw form:  " << string(&raw[0]) << endl;
+        cout << "   hex form:  " << string(&hex[0]) << endl;
     }
+
 };
 
 class HashForce {
@@ -338,7 +359,7 @@ private:
 
     bool
     prepareBlock(void) {
-        cout <<  "block № " << blockNum << ": start from " << offset << " ... ";
+        cout <<  "block № " << blockNum << ": start from " << offset << " ... " << flush;
         uint64_t length = options->blockLength;
         uint32_t remain = 0;
 
@@ -413,26 +434,6 @@ int main(int argc, char *argv[])
         args.showHelp();
         return -1;
     }
-
-    printf("blockLength     : %u\n", args.blockLength);
-    printf("cores           : %u\n", args.cores);
-    printf("rangeFrom       : %u\n", args.rangeFrom);
-    printf("rangeTo         : %u\n", args.rangeTo);
-    printf("rangeCapacity   : %lu\n",args.rangeCapacity);
-/*
-    for (ArgOptions::chRange &ch: args.chRanges) {
-        printf("from: %u, to: %u, count: %u\n", ch.from, ch.to, ch.count);
-    }
-
-    Word word(&args);
-    word.Print();
-    for (int i = 0; i < 64; i++) {
-        word.Set(i);
-        printf("word.Set(%d): ", i);
-        word.Print();
-    }
-*/
-
     HashForce hashForce(&args);
     hashForce.Manage();
 
