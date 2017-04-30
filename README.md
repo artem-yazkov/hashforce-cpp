@@ -1,6 +1,6 @@
 hashforce - a shell interface application to perform distributed brute-force attack against a provided hash
 
-You can compile app with provided makefie
+You can compile app with provided makefile
 ```
 $ make
 g++ -Wall -std=c++11 -lpthread -o hashforce hashforce.cpp md5.cpp
