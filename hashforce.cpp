@@ -69,8 +69,8 @@ private:
             chRange cr;
             cr.from = (from < to) ? from : to;
             cr.to   = (from < to) ? to : from;
-            if (cr.to > 128) {
-                Error("characters range must be in [0, 128]");
+            if (cr.to > 127) {
+                Error("character codes must be in [0, 127]");
                 return -1;
             }
             chRanges.push_back(move(cr));
